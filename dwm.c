@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -224,6 +225,7 @@ static void resizerequest(XEvent *e);
 static void restack(Monitor *m);
 static void run(void);
 static void runAutostart(void);
+static void runRainbow(void);
 static void scan(void);
 static int sendevent(Window w, Atom proto, int m, long d0, long d1, long d2, long d3, long d4);
 static void sendmon(Client *c, Monitor *m);
@@ -311,6 +313,10 @@ static int useargb = 0;
 static Visual *visual;
 static int depth;
 static Colormap cmap;
+
+static int colorIndex = 0;
+static int colorRange = 100;
+static clock_t lastColorChange = 0;
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
@@ -1576,9 +1582,14 @@ run(void)
 	XEvent ev;
 	/* main event loop */
 	XSync(dpy, False);
-	while (running && !XNextEvent(dpy, &ev))
-		if (handler[ev.type])
-			handler[ev.type](&ev); /* call handler */
+	while (running) {
+		while (XPending(dpy)) {
+			XNextEvent(dpy, &ev);
+			if (handler[ev.type])
+				handler[ev.type](&ev); /* call handler */
+		}
+		runRainbow();
+	}
 }
 
 void
@@ -1586,6 +1597,49 @@ runAutostart(void) {
 	system("cd ~/.dwm; ./autostart_blocking.sh");
 	system("cd ~/.dwm; ./autostart.sh &");
 }
+
+unsigned int rgb(double ratio)
+{
+    //we want to normalize ratio so that it fits in to 6 regions
+    //where each region is 256 units long
+    int normalized = (int) (ratio * 256 * 6);
+
+    //find the distance to the start of the closest region
+    int x = normalized % 256;
+
+    int red = 0, grn = 0, blu = 0;
+    switch(normalized / 256)
+    {
+    case 0: red = 255;      grn = x;        blu = 0;       break;//red
+    case 1: red = 255 - x;  grn = 255;      blu = 0;       break;//yellow
+    case 2: red = 0;        grn = 255;      blu = x;       break;//green
+    case 3: red = 0;        grn = 255 - x;  blu = 255;     break;//cyan
+    case 4: red = x;        grn = 0;        blu = 255;     break;//blue
+    case 5: red = 255;      grn = 0;        blu = 255 - x; break;//magenta
+    }
+
+    return red + (grn << 8) + (blu << 16);
+}
+
+void
+runRainbow(void) {
+	clock_t delta_ticks = clock() - lastColorChange;
+	if (delta_ticks > CLOCKS_PER_SEC * 0.1) {
+		lastColorChange = clock();
+		colorIndex++;
+		if (colorIndex > colorRange) colorIndex = 1;
+		scheme[SchemeSel][ColBorder].pixel = rgb((double) (colorIndex) / colorRange);
+		scheme[SchemeSel][ColBg].pixel = rgb((double) (colorIndex) / colorRange);
+		drawbars();
+	}
+	
+	//fprintf(stdout, "scheme[SchemeSel][ColBg] %d\n", scheme[SchemeSel][ColBg].pixel);
+	//fprintf(stdout, "delta_ticks    %d\n", delta_ticks);
+	//fprintf(stdout, "CLOCKS_PER_SEC %d\n", CLOCKS_PER_SEC);
+	//fflush(stdout);
+}
+
+
 
 void
 scan(void)
