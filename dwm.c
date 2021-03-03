@@ -22,12 +22,12 @@
  */
 #include <errno.h>
 #include <locale.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -43,6 +43,7 @@
 #include <X11/Xft/Xft.h>
 
 #include "drw.h"
+#include "rainbow.c"
 #include "util.h"
 
 /* macros */
@@ -215,6 +216,7 @@ static Client *nexttiled(Client *c);
 static void pop(Client *);
 static void propertynotify(XEvent *e);
 static void quit(const Arg *arg);
+static void* rainbowthread(void *arg);
 static Monitor *recttomon(int x, int y, int w, int h);
 static void removesystrayicon(Client *i);
 static void resize(Client *c, int x, int y, int w, int h, int interact);
@@ -225,7 +227,6 @@ static void resizerequest(XEvent *e);
 static void restack(Monitor *m);
 static void run(void);
 static void runAutostart(void);
-static void runRainbow(void);
 static void scan(void);
 static int sendevent(Window w, Atom proto, int m, long d0, long d1, long d2, long d3, long d4);
 static void sendmon(Client *c, Monitor *m);
@@ -300,7 +301,7 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 	[ResizeRequest] = resizerequest,
 	[UnmapNotify] = unmapnotify
 };
-static Atom wmatom[WMLast], netatom[NetLast], xatom[XLast];
+static Atom wmatom[WMLast], netatom[NetLast], xatom[XLast], rainbowatom;
 static int running = 1;
 static Cur *cursor[CurLast];
 static Clr **scheme;
@@ -313,10 +314,6 @@ static int useargb = 0;
 static Visual *visual;
 static int depth;
 static Colormap cmap;
-
-static int colorIndex = 0;
-static int colorRange = 100;
-static clock_t lastColorChange = 0;
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
@@ -616,6 +613,11 @@ clientmessage(XEvent *e)
 			updatesystray();
 			setclientstate(c, NormalState);
 		}
+		return;
+	}
+	if (cme->message_type == rainbowatom) {
+		runrainbow(&scheme[SchemeSel][ColBg]);
+		drawbars();
 		return;
 	}
 	if (!c)
@@ -1399,6 +1401,16 @@ quit(const Arg *arg)
 	running = 0;
 }
 
+void *
+rainbowthread(void *arg) {
+	while (1) {
+		usleep(rainbowrate);
+		sendevent(0, rainbowatom, StructureNotifyMask, CurrentTime, 0, 0, 0, 0);
+		XSync(dpy, False);
+	}
+	return NULL;
+}
+
 Monitor *
 recttomon(int x, int y, int w, int h)
 {
@@ -1582,14 +1594,9 @@ run(void)
 	XEvent ev;
 	/* main event loop */
 	XSync(dpy, False);
-	while (running) {
-		while (XPending(dpy)) {
-			XNextEvent(dpy, &ev);
-			if (handler[ev.type])
-				handler[ev.type](&ev); /* call handler */
-		}
-		runRainbow();
-	}
+	while (running && !XNextEvent(dpy, &ev))
+		if (handler[ev.type])
+			handler[ev.type](&ev); /* call handler */
 }
 
 void
@@ -1597,49 +1604,6 @@ runAutostart(void) {
 	system("cd ~/.dwm; ./autostart_blocking.sh");
 	system("cd ~/.dwm; ./autostart.sh &");
 }
-
-unsigned int rgb(double ratio)
-{
-    //we want to normalize ratio so that it fits in to 6 regions
-    //where each region is 256 units long
-    int normalized = (int) (ratio * 256 * 6);
-
-    //find the distance to the start of the closest region
-    int x = normalized % 256;
-
-    int red = 0, grn = 0, blu = 0;
-    switch(normalized / 256)
-    {
-    case 0: red = 255;      grn = x;        blu = 0;       break;//red
-    case 1: red = 255 - x;  grn = 255;      blu = 0;       break;//yellow
-    case 2: red = 0;        grn = 255;      blu = x;       break;//green
-    case 3: red = 0;        grn = 255 - x;  blu = 255;     break;//cyan
-    case 4: red = x;        grn = 0;        blu = 255;     break;//blue
-    case 5: red = 255;      grn = 0;        blu = 255 - x; break;//magenta
-    }
-
-    return red + (grn << 8) + (blu << 16);
-}
-
-void
-runRainbow(void) {
-	clock_t delta_ticks = clock() - lastColorChange;
-	if (delta_ticks > CLOCKS_PER_SEC * 0.1) {
-		lastColorChange = clock();
-		colorIndex++;
-		if (colorIndex > colorRange) colorIndex = 1;
-		scheme[SchemeSel][ColBorder].pixel = rgb((double) (colorIndex) / colorRange);
-		scheme[SchemeSel][ColBg].pixel = rgb((double) (colorIndex) / colorRange);
-		drawbars();
-	}
-	
-	//fprintf(stdout, "scheme[SchemeSel][ColBg] %d\n", scheme[SchemeSel][ColBg].pixel);
-	//fprintf(stdout, "delta_ticks    %d\n", delta_ticks);
-	//fprintf(stdout, "CLOCKS_PER_SEC %d\n", CLOCKS_PER_SEC);
-	//fflush(stdout);
-}
-
-
 
 void
 scan(void)
@@ -1820,6 +1784,7 @@ setup(void)
 	bh = drw->fonts->h + 2;
 	updategeom();
 	/* init atoms */
+	rainbowatom = XInternAtom(dpy, "RAINBOW_ATOM", False);
 	utf8string = XInternAtom(dpy, "UTF8_STRING", False);
 	wmatom[WMProtocols] = XInternAtom(dpy, "WM_PROTOCOLS", False);
 	wmatom[WMDelete] = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
@@ -1854,6 +1819,9 @@ setup(void)
 	/* init bars */
 	updatebars();
 	updatestatus();
+	/* init rainbow */
+	pthread_t thread;
+	pthread_create(&thread, NULL, &rainbowthread, NULL);
 	/* supporting window for NetWMCheck */
 	wmcheckwin = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
 	XChangeProperty(dpy, wmcheckwin, netatom[NetWMCheck], XA_WINDOW, 32,
@@ -2613,6 +2581,7 @@ zoom(const Arg *arg)
 int
 main(int argc, char *argv[])
 {
+	XInitThreads();
 	if (argc == 2 && !strcmp("-v", argv[1]))
 		die("dwm-"VERSION);
 	else if (argc != 1)
