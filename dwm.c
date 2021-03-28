@@ -242,6 +242,7 @@ static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
 static void tile(Monitor *);
 static void togglebar(const Arg *arg);
+static void togglefakefullscreen(const Arg *arg);
 static void togglefloating(const Arg *arg);
 static void toggletag(const Arg *arg);
 static void toggleview(const Arg *arg);
@@ -1944,6 +1945,16 @@ togglebar(const Arg *arg)
 		}
 		XConfigureWindow(dpy, systray->win, CWY, &wc);
 	}
+	arrange(selmon);
+}
+
+void
+togglefakefullscreen(const Arg *arg)
+{
+	if (!selmon->sel)
+		return;
+	selmon->sel->isfakefullscreen = !selmon->sel->isfakefullscreen;
+	selmon->sel->isfloating = False;
 	arrange(selmon);
 }
 
